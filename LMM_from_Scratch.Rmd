@@ -1,0 +1,294 @@
+---
+title: "Linear Mixed Model (LMM) Derived From Scratch"
+author: "Nikolay Oskolkov, SciLifeLab, NBIS Long Term Support, nikolay.oskolkov@scilifelab.se"
+date: "October 16, 2018"
+output:
+  html_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+subtitle: Computing LMM from Maximum Likelihood (ML) principle.
+abstract: |
+  In this tutorial we will derive and code the Linear Mixed Model (LMM) from scratch from the Maximum Likelihood (ML) principle, i.e. we will use plain R for programming LMM and compare the output with the one from Lmer / Lme / Lme4 etc. The goal of this tutorial is to explain LMM "like for your grandmother" implying that people with no mathematical background should be able to understand what LMM does "under the hood".
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(options(warn=-1))
+knitr::opts_knit$set(root.dir="/home/nikolay/Documents/Medium/LinearMixedModelFromScratch/")
+```
+
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  TeX: { equationNumbers: { autoNumber: "AMS" } }
+});
+</script>
+
+
+### Toy Data Set
+
+Let us consider a model which is very simple but still keeps all necessary elements of the Linear Mixed Modelling (LMM). Suppose we have 4 data points only: 2 originating from Individual #1 and the other 2 coming from Individual #2. Further, the 4 points are spread between two conditions: untreated and treated. In other words we are planing to perform something similar to the **paired t-test** and test the significance of treatment, please see the figure below. Later we will indeed relate the outputs from LMM and paired t-test and see that they are identical.
+
+```{r,fig.width=10,fig.height=8}
+library("ggplot2")
+df<-data.frame(Treat=c(0,1,0,1),
+               Resp=c(10,25,3,6),
+               Ind=c(1,1,2,2))
+df
+ggplot(df, aes(x=Treat, y=Resp, color=factor(Ind), group=Ind)) + 
+  geom_point(size=3) + geom_line() + labs(color="Individual")
+```
+
+Here 0 in the "Treat" column means "untreated" and 1 means "treated". Let us apply a naive linear regression without taking into account relatedness between the data points:
+
+```{r,fig.width=10,fig.height=8}
+summary(lm(Resp~Treat, data=df))
+ggplot(df, aes(x=Treat, y=Resp)) + geom_point() + geom_smooth(method="lm")
+```
+
+Technically it works. However, this is not a good fit, we have a severe problem here. Ordinary Least Squares (OLS) Linear Regression assumes that all the observations (data points on the plot) are independent, which will result in uncorrelated and hence Gaussian distributed residuals. However, we know that the data points on the plot belong to 2 individuals, i.e. 2 points for each individual. In principal, we can fit a linear model for each individual separately:
+
+```{r,fig.width=10,fig.height=8}
+ggplot(df, aes(x = Treat, y = Resp)) +
+    geom_smooth(method = "lm", level = 0.95) + geom_point() + facet_wrap(~Ind, nrow = 1, ncol = 2)
+```
+
+However, this is not a good fit either. We have two points for each individual, so too few to make a reasonable fit for each individual. In contrast, if we want to consider all the four data points together we will need to somehow account for the fact that they are not independent, i.e. two of them belong to individual #1 and two belong to individual #2. This can be done within the Linear Mixed Model (LMM) or paired test, for example paired t-test. 
+
+
+### Linear Mixed Model with Lmer and Lme
+
+When we use Linear Mixed Models (LMM) we assume that there is a non-independence between observations. In our case, the observations cluster for each individual. It can be different types of clustering, for eaxample individuals might be genetically related, i.e. cluter in different families or populations. Let us use Linear Mixed Model (LMM) with fixed effects for slopes and intercepts and random effects for intercepts:
+
+```{r}
+library("lme4")
+fit <- lmer(Resp ~ Treat + (1 | Ind), df, REML = FALSE)
+summary(fit)
+```
+
+Using REML=FALSE simply means that we are using the Maximum Likelihood (ML) optimiation and not REML (will talk later about REML). Here, in the Random Effects section, we see that there are estimates for two parameters of minimization: **residual variance** corresponding to the standard deviation of 4.243, and the **random effects (shared between individuals) variance associated with the Intercept** with the standard deviation of 5.766. In the Fixed Effects section we see two estimates: for intercept equal to 6.5, and slope / Treat equal to 9. Thus we have 4 parameters of optimization corresponding to 4 data points (statistical observations). The values of Fixed Effects make sense if we look at the very first figure and realize that the mean of two values for untreated samples is (3 + 10) / 2 = 6.5, we will denote it as $\beta_1$, and mean of treated samples is (6 + 25) / 2 = 15.5, we will denote it as $\beta_2$, which would be equivalent to 6.5 + 9, i.e. estimate for the fixed effect of the intercept (=6.5) plus the estimate for the fixed effect of the slope (=9).
+
+Also it is important to note that we use "REML = FALSE" in the lmer function since for now we are not going address Restricted Maximum Likelihood (REML) which is a default method in lmer but deliberately concentrate on the Maximum Likelihood (ML) principle. The REML algorithm will be covered later. 
+
+If you are nesessarily would like to have a p-value of your LMM, it is possible to use "lme" function from "nlme" R package, since "lmer" does not provide any information about statistical significance:
+
+```{r}
+library("nlme")
+summary(lme(Resp ~ Treat, random = ~ 1 | Ind, data=df, method="ML"))
+```
+
+Again, here we have Random Effects for Intercept (StdDev=5.766264) and Residual error (StdDev=4.242649) and Fixed Effects for Intercept (Value=6.5) and Slope / Treat (Value=9). Interestingly, the standard errors of Fixed Effects and hence t-values do not fully agree between lmer and lme. However, if we use REML = TRUE for the lmer function, the Fixed Effects statistics including t-values will be identical between lme and lmer, however the Random Effects stats will be different.
+
+```{r}
+summary(lmer(Resp ~ Treat + (1 | Ind), df, REML = TRUE))
+```
+
+The reson for this will be understood after we cover how REML algorithm works.
+
+
+### Relation to Paired T-Test
+
+Previously, we said that LMM is a more complex form of a simple paired t-test. Let us demonstrate that for our toy data set they do give identical outputs. On the way, we will also understand the technical difference between paired and un-paired t-tests. Let us first run the paired t-test between the treated and un-treated groups of samples taking into account the non-independence between them:
+
+```{r}
+t.test(df$Resp~df$Treat==0,paired=TRUE)
+```
+
+We can see that the t-value = 1.5 and p-value = 0.3743 are identical to the ones obtained by LMM using the nlme function. The statistic "mean of the differences = 9" also agrees with the Fixed Effect estimates from lmer and nlme, recall that we had Treat Estimate = 9 that was simply the difference between the means of treated and untreated samples.
+
+Now, what exactly the paired t-test is doing? Well, the idea of the paired t-test is to make the data look like a one-sample t-test where values in one group are test for their significant deviation from zero, which is a sort of mean of the second group. In other words, we can view a paired t-test as if we shit the intercepts of the individual fits (see the very first figure) or the mean values of the untreated group down to zero. In the simplest way this would be equivalent in transforming the Resp variable to Resp_std (standardized response) as follows:
+
+```{r}
+df$Resp_std[df$Treat==0]<-df$Resp[df$Treat==0]-df$Resp[df$Treat==0]
+df$Resp_std[df$Treat==1]<-df$Resp[df$Treat==1]-df$Resp[df$Treat==0]
+df
+```
+
+We observe that the values of response became 0 for Treat = 0, i.e. untreated group, while the Response values of the treated group (Treat=1) were reduced by the values of the untreated group. Now we can use the new Resp_std variable and run an un-paired t-test, the result will be equivalent to running paired t-test on the original Resp variable:
+
+```{r}
+t.test(df$Resp_std~df$Treat==0,paired=FALSE)
+```
+
+Thus, we conclude that LMM reproduces the result of the paired t-test but allows for much more flexibility, for example, not only two (like for t-test) but multiple groups comparison etc.
+
+
+### Linear Mixed Model from Scratch
+
+Let us again have a look at the 4 data points and make some mathematical notations accounting for treatment effects, $\beta$, which is nothing else than Fixed Effects, and the block-wise structure $u$ due to the two individuals, which is actually the Random Effects contribution. We will try to express the Response coordinate **y** in terms of $\beta$ and $u$ parameters.
+
+![](Treated_Untreated_Mod3.png){ width="1000" height="650" style="display: block; margin: 0 auto" }
+<br>
+
+Here $\beta_1$ is the response of the individuals in the untreated state while $\beta_2$ is the response to the treatment. One can also say that $\beta_1$ is the mean of the untreated samples while $\beta_2$ is the mean of the treated samples. The variables $u_1$ and $u_2$ are block variables accounting for effects specific to Indiviual #1 and Individual #2, respectively. Finally, $\epsilon_{ij} \sim N(0, \sigma^2)$ is the Residual error, i.e. the error we can't model and can only try to minimize it as the goal of the Maximum Likelihood optimization problem. Therefore, we can write down the response variable $y$ as a combination of parameters $\beta$, $u$, i.e. Fixed and Random Effects, and $\epsilon$:
+
+\begin{equation}
+\label{eq:system_of_eqs}
+\begin{aligned}
+y_{11} = \beta_1 + u_1 + \epsilon_{11} \\
+y_{21} = \beta_2 + u_1 + \epsilon_{21} \\
+y_{12} = \beta_1 + u_2 + \epsilon_{12} \\
+y_{22} = \beta_2 + u_2 + \epsilon_{22}
+\end{aligned}
+\end{equation}
+
+In the general form this system of algebraic equations can be rewritten as follows:
+
+\begin{equation}
+\label{eq:index_eqs}
+\begin{aligned}
+y_{ij} = \beta_i + u_j + \epsilon_{ij}
+\end{aligned}
+\end{equation}
+
+where index i=1,2 corresponds to treatment and j=1,2 describes individual effects. We can also express this system of equations in the matrix form:
+
+\begin{equation}
+\label{eq:matrix_eqs}
+\begin{aligned}
+\begin{bmatrix}
+y_{11} \\
+y_{21} \\
+y_{12} \\
+y_{22}
+\end{bmatrix} = 
+\begin{bmatrix}
+1 & 0 \\
+0 & 1 \\
+1 & 0 \\
+0 & 1
+\end{bmatrix}
+\begin{bmatrix}
+\beta_1 \\
+\beta_2
+\end{bmatrix}+
+\begin{bmatrix}
+1 & 0 \\
+1 & 0 \\
+0 & 1 \\
+0 & 1
+\end{bmatrix}
+\begin{bmatrix}
+u_1 \\
+u_2
+\end{bmatrix}+
+\begin{bmatrix}
+\epsilon_{11} \\
+\epsilon_{21} \\
+\epsilon_{12} \\
+\epsilon_{22}
+\end{bmatrix}
+\end{aligned}
+\end{equation}
+
+
+Therefore we arrive to the following famous matrix form of LMM which is shown in all textbooks but not always properly explained:
+
+\begin{equation}
+\label{eq:matrix_form_eqs}
+\begin{aligned}
+
+\mathbf{Y} = \mathbf{X}\beta + \mathbf{K}u + \epsilon
+
+\end{aligned}
+\end{equation}
+
+
+Here $\textbf{X}$ is called the **design matrix** and $\textbf{K}$ is called the **block matrix**, it codes the relationship between the data points, i.e. whether they come from related individuals or even from the same individual like in our case. It is important to note that the treatment is modelled as a fixed effect because the levels treated-untreated exhaust all possible outcomes of the treatment. In contrast, the block-wise structure of the data is modelled as a random effect since the individuals were sampled from the population and do not correctly represent the whole population of individuals. In other words, there is an error associated with the random effects, i.e. $u_j \sim N(0,\sigma_s^2)$, while fixed affects are assumed to be error-free. For example, sex is usually modelled as a fixed effect because it is usually assumed to have only two levels (males, females), while batch-effects in Life Sciences should be modelled as random effects because additional experimental protocols or labs (i.e. many levels) would produce many more systematic differences between the samples confounding the data analysis. As a rule of thumb one could think that Fixed Effects should not have many levels, while Random Effects are typically multi-level categorical variables where the levels represent just a sample of all possibilities but not all of them.
+
+Let us proceed with calculating the mean and the variance of the data points $\textbf{Y}$, since Fixed Effects are assumed to be error-free, i.e. the expected value of the error is zero, we can write:
+
+$$E\left[\textbf{Y}\right] = \textbf{X}\beta$$
+
+This is because the random effect error and the residual error come from the Normal distribution with zero mean, while the non-zero component in $E\left[\textbf{Y}\right]$ originates from the fixed effect. Since the variance of the Fixed Effect term is zero (Fixed Effects are assumed to be error-free), for the variance of $\textbf{Y}$ we obtain:
+
+$$\rm{var}\left[\textbf{Y}\right] \equiv \mathbf{\Sigma}_y = \rm{var}\left(\textbf{K}u\right) + \rm{var}\left(\epsilon\right) = \sigma_s^2\textbf{K}\textbf{K}^T + \sigma^2\textbf{I}$$
+
+This was obtained taking into account that $\rm{var}\left(\textbf{A}x\right) = \textbf{A}\rm{var(x)\textbf{A}}^T$ and $\rm{var(\epsilon)}=\sigma^2\textbf{I}$ and $\rm{var(u)}=\sigma_s^2\textbf{I}$, where $\textbf{I}$ is a 4 x 4 identity matrix. Here $\sigma^2$ is a residual variance (unmodelled / unreduced error), and $\sigma_s^2$ is a random effects (shared across data points) variance. The matrix in front of $\sigma_s^2$ is called *kinship matrix* and it is equal to:
+
+$$\textbf{K}\textbf{K}^T = 
+\begin{bmatrix}
+1 & 0 \\
+1 & 0 \\
+0 & 1 \\
+0 & 1
+\end{bmatrix}
+\begin{bmatrix}
+1 & 1 & 0 & 0 \\
+0 & 0 & 1 & 1
+\end{bmatrix} = 
+\begin{bmatrix}
+1 & 1 & 0 & 0 \\
+1 & 1 & 0 & 0 \\
+0 & 0 & 1 & 1 \\
+0 & 0 & 1 & 1
+\end{bmatrix}
+$$
+
+The kinship matrix codes the relatedness across the data points. Some data points might come from genetically related individuals or geographical spots in the close proximity, some data points might come from technical replicates. All those relationships are coded in the kinship matrix. Therefore the variance-covariance matrix of the data points takes the form:
+
+$$
+\mathbf{\Sigma}_y =
+\begin{bmatrix}
+\sigma_s^2+\sigma^2 & \sigma_s^2 & 0 & 0 \\
+\sigma_s^2 & \sigma_s^2+\sigma^2 & 0 & 0 \\
+0 & 0 & \sigma_s^2+\sigma^2 & \sigma_s^2 \\
+0 & 0 & \sigma_s^2 & \sigma_s^2+\sigma^2
+\end{bmatrix}
+$$
+
+Once we computed the variance-covariance matrix, we can continue in the next section with the optimization of the Maximum Likelihood function that explicitly requires the variance-covariance matrix.
+
+
+### Linear Mixed Model from Maximum Likelihood (ML) Principle
+
+The natural question to ask now is: why did we spend so much time to deriving the variance-covariance matrix and what does it have to do with the lnear regression? Well, it turns out that the whole concept of fitting linear model (as many other if not all concepts of mathematical statistics) comes from the Maximum Likelihood (ML) principle. For this purpose we need to maximize the Multivariate Gaussian distribution function with respect to parameters $\beta_1$, $\beta_2$, $\sigma_s^2$ and $\sigma^2$:
+
+$$\rm{\large L}(\large \beta_1, \beta_2, \sigma_s^2, \sigma^2) = \frac{\large 1}{\sqrt{\large 2\pi|\mathbf{\Sigma}_y|}}\rm{\large e}^\frac{\displaystyle \mathbf{\left(\mathbf{Y}-\mathbf{X}\beta\right)^T\Sigma}_y^{-1}\left(\mathbf{Y}-\mathbf{X}\beta\right)}{\displaystyle 2}$$
+
+Here $\lvert\mathbf{\Sigma}_y\rvert$ denotes the determinant of the variance-covariance matrix. We see that the inverse matrix and determinant of the variance-covariance matrix are explicitly included into the Likelihood function, this is why we needed to derive how it depends on the random effects variance $\sigma_s^2$ and residual variance $\sigma^2$. Maximization of the Likelihood function is equivalent to minimization of the log-likelihood function:
+
+$$\log\left(\rm{\large L}(\large \beta_1, \beta_2, \sigma_s^2, \sigma^2)\right) = -\frac{1}{2}\log{\left(2\pi\right)} - \frac{1}{2}\log{\left(\lvert\mathbf{\Sigma}_y\rvert\right)} - \frac{1}{2}\mathbf{\left(\mathbf{Y}-\mathbf{X}\beta\right)^T\Sigma}_y^{-1}\left(\mathbf{Y}-\mathbf{X}\beta\right)$$
+
+### Maximum Likelihood (ML) Computation
+
+We will need to perform a tedious symbolic calculation of the determinant of the variance-covariance matrix, the inverse variance-covariance matrix and the product of the inverse variance-covariance matrix with the $\mathbf{Y}-\mathbf{X}\beta$ terms. This is hard to do in R / Python but we can use Maple (or similarly Mathematica or Matlab) for making symbolic calculations, and derive the expression for determinant and inverse of the variance-covariance matrix:
+
+![](ML.png){ width="1000" height="600" style="display: block; margin: 0 auto" }
+
+<br>
+
+From Maple we get the determinant of the variance-covariance matrix has the following expression:
+
+$$\lvert\mathbf{\Sigma}_y\rvert = 4\sigma_s^4 \sigma^4 + 4\sigma_s^2 \sigma_s^6 + \sigma^8$$
+
+The last term from the expression for log-likelihood can be expressed as follows:
+
+$$\mathbf{\left(\mathbf{Y}-\mathbf{X}\beta\right)^T\Sigma}_y^{-1}\left(\mathbf{Y}-\mathbf{X}\beta\right) = \frac{1}{\sigma^2(\sigma^2+2\sigma_s^2)}\left[(y_{11}-\beta_1)^2(\sigma^2+\sigma_s^2) - 2(y_{11}-\beta_1)(y_{21}-\beta_2)\sigma_s^2 + \right. \\ \left. (y_{21}-\beta_2)^2(\sigma^2+\sigma_s^2) + (y_{12}-\beta_1)^2(\sigma^2+\sigma_s^2) - 2(y_{12}-\beta_1)(y_{22}-\beta_2)\sigma_s^2 + (y_{22}-\beta_2)^2(\sigma^2+\sigma_s^2) \right]$$
+
+Now everything is ready for performing numerical minimization of the log-likelihood function with respect to $\beta_1$, $\beta_2$, $\sigma_s^2$ and $\sigma^2$:
+
+```{r}
+f<-function(x)
+{
+  sigma  <-  x[1]
+  sigmas <-  x[2]
+  beta1  <-  x[3]
+  beta2  <-  x[4]
+  y11    <-  3
+  y12    <-  10
+  y21    <-  6
+  y22    <-  25
+  -(1/2)*log(2*pi)-(1/2)*log(4*sigmas^4*sigma^4 + 4*sigmas^2*sigma^6 + sigma^8) - (1/2)*(1/((sigma^2)*(sigma^2+2*sigmas^2)))*(((y11-beta1)^2)*(sigma^2+sigmas^2) - 2*(y11-beta1)*(y21-beta2)*(sigmas^2) + ((y21-beta2)^2)*(sigma^2+sigmas^2) + ((y12-beta1)^2)*(sigma^2+sigmas^2) - 2*(y12-beta1)*(y22-beta2)*(sigmas^2) + ((y22-beta2)^2)*(sigma^2+sigmas^2))
+}
+optim(par=c(1,1,1,1),f,method="L-BFGS-B",lower=c(1,1,1,1),upper=c(10,10,10,20),hessian = TRUE,control=list(fnscale=-1))
+```
+
+We see that the minimization algorithm has converged since we get "convergence = 0". In the output, $\sigma = 4.242640687$ is the residual standard deviation, which is exactly reproduces the result from lme and lmer (with REML = FALSE). By analogy, $\sigma_s = 5.766281297$ is the shared standard deviation which again exactly reproduces the corresponding Random Effects outputs from lme and lmer (with REML = FALSE). As expected the Fixed Effect $\beta_1=6.5$ is the mean of the untreated samples in agreement with the Intercept Fixed Effect Estimate from lmer and lme, and $\beta_2=15.5$ is the mean of the treated samples which is the Intercept Fixed Effect Estimate (=6.5) plus the Slope / Treat Fixed Effect Estimate (=9) from lmer and lme.
+
+Well done, we have successfully reproduced the Fixed and Random Effects outputs from lmer / lme by deriving and coding the LMM from scratch!
